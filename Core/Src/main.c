@@ -1,6 +1,6 @@
 /**
  * @file    main.c
- * @brief   Loop principal – Controlador de Posição NEMA 17 com STM32F411 Nucleo
+ * @brief   Loop principal – Controlador de Posição NEMA 17 com STM32F103C8 Black Pill
  *
  * Arquitetura:
  *   ┌─────────────┐     ┌───────────────┐     ┌──────────────┐
@@ -13,19 +13,23 @@
  *                         └─────────────┘
  *
  * Periféricos:
- *   TIM2  → PWM STEP (PA5, canal 1) — prescaler 83, ARR variável
- *   TIM3  → Loop de controle 1 kHz  — prescaler 8399, ARR 9
- *   ADC1  → Potenciômetro (PA0, canal 0)
- *   USART2→ Telemetria debug 115200 baud (PA9=TX, PA10=RX)
+ *   TIM3  → PWM STEP (PA6, canal 1) — Prescaler 71, ARR variável
+ *   TIM4  → Loop de controle 1 kHz  — Prescaler 7199, ARR 9
+ *   ADC1  → Potenciômetro (PA0, canal 0) — 12-bit
+ *   USART1→ Telemetria debug 115200 baud (PA9=TX, PA10=RX)
  *
  * Pinos:
  *   PA0  → Potenciômetro (ADC1_IN0)
- *   PA5  → STEP (TIM2_CH1 PWM)
- *   PA6  → DIR  (GPIO saída)
- *   PA7  → EN   (GPIO saída, LOW = habilitado)
- *   PA9  → UART TX
- *   PA10 → UART RX
- *   PC13 → Botão USER (pull-up interno)
+ *   PA1  → DIR  (GPIO saída)
+ *   PA2  → EN   (GPIO saída, LOW = habilitado)
+ *   PA6  → STEP (TIM3_CH1 PWM)
+ *   PA9  → USART1 TX
+ *   PA10 → USART1 RX
+ *   PC13 → LED onboard / botão homing (pull-up interno)
+ *
+ * Nota: PA0 é usado exclusivamente para ADC (potenciômetro).
+ *       O sinal STEP foi movido para PA6 (TIM3_CH1) para evitar
+ *       conflito com ADC1_IN0.
  *
  * Constantes PID:
  *   KP = 6.0,  KI = 0.3,  KD = 0.15
@@ -56,10 +60,10 @@
 
 /* ── Handles de periférico (gerados pelo CubeMX / .ioc) ──────────────── */
 
-ADC_HandleTypeDef  hadc1;   /**< ADC1 — potenciômetro (PA0) */
-TIM_HandleTypeDef  htim2;   /**< TIM2 — PWM STEP (PA5) */
-TIM_HandleTypeDef  htim3;   /**< TIM3 — loop de controle 1 kHz */
-UART_HandleTypeDef huart2;  /**< USART2 — debug/telemetria */
+ADC_HandleTypeDef  hadc1;   /**< ADC1 — potenciômetro (PA0, 12-bit) */
+TIM_HandleTypeDef  htim3;   /**< TIM3 — PWM STEP (PA6, canal 1) */
+TIM_HandleTypeDef  htim4;   /**< TIM4 — loop de controle 1 kHz */
+UART_HandleTypeDef huart1;  /**< USART1 — debug/telemetria (PA9=TX, PA10=RX) */
 
 /* ── Instâncias dos módulos de controle ──────────────────────────────── */
 
@@ -69,7 +73,7 @@ static Stepper_t     stepper;    /**< Driver do motor de passo */
 
 /* ── Variáveis de controle ───────────────────────────────────────────── */
 
-static volatile uint8_t control_flag = 0;  /**< Setada pelo callback TIM3 a 1 kHz */
+static volatile uint8_t control_flag = 0;  /**< Setada pelo callback TIM4 a 1 kHz */
 static float            setpoint     = 0.0f; /**< Posição desejada em steps */
 static uint32_t         telem_count  = 0;    /**< Contador para telemetria */
 
@@ -78,9 +82,9 @@ static uint32_t         telem_count  = 0;    /**< Contador para telemetria */
 static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
-static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
-static void MX_USART2_UART_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_USART1_UART_Init(void);
 static void Send_Telemetry(float pid_output);
 static void Error_Handler(void);
 
@@ -97,16 +101,16 @@ int main(void)
     /* ── 2. Inicialização dos periféricos ────────────────────────────── */
     MX_GPIO_Init();
     MX_ADC1_Init();
-    MX_TIM2_Init();
     MX_TIM3_Init();
-    MX_USART2_UART_Init();
+    MX_TIM4_Init();
+    MX_USART1_UART_Init();
 
     /* ── 3. Inicialização dos módulos de controle ────────────────────── */
 
-    /* Motor: TIM2 canal 1, DIR=PA6, EN=PA7 */
-    Stepper_Init(&stepper, &htim2, TIM_CHANNEL_1,
-                 GPIOA, GPIO_PIN_6,
-                 GPIOA, GPIO_PIN_7);
+    /* Motor: TIM3 canal 1, DIR=PA1, EN=PA2 */
+    Stepper_Init(&stepper, &htim3, TIM_CHANNEL_1,
+                 GPIOA, GPIO_PIN_1,
+                 GPIOA, GPIO_PIN_2);
     Stepper_Enable(&stepper);
 
     /* Encoder: ADC1, canal 0 (PA0) */
@@ -121,12 +125,12 @@ int main(void)
     Encoder_Pot_Update(&encoder);
     setpoint = (float)Encoder_Pot_GetSteps(&encoder);
 
-    /* ── 5. Inicia timer de controle (TIM3 → 1 kHz) ─────────────────── */
-    HAL_TIM_Base_Start_IT(&htim3);
+    /* ── 5. Inicia timer de controle (TIM4 → 1 kHz) ─────────────────── */
+    HAL_TIM_Base_Start_IT(&htim4);
 
     /* ── 6. Loop principal ───────────────────────────────────────────── */
     while (1) {
-        /* Aguarda a flag setada pelo callback do TIM3 */
+        /* Aguarda a flag setada pelo callback do TIM4 */
         if (control_flag) {
             control_flag = 0;
 
@@ -176,12 +180,12 @@ int main(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * Callback do Timer TIM3 — seta a flag de controle a 1 kHz
+ * Callback do Timer TIM4 — seta a flag de controle a 1 kHz
  * ═══════════════════════════════════════════════════════════════════════ */
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-    if (htim->Instance == TIM3) {
+    if (htim->Instance == TIM4) {
         control_flag = 1;
     }
 }
@@ -212,13 +216,15 @@ static void Send_Telemetry(float pid_output)
                    (int)PID_IsInDeadzone(&pid));
 
     if (len > 0 && len < (int)sizeof(buf)) {
-        HAL_UART_Transmit(&huart2, (uint8_t *)buf, (uint16_t)len, 10);
+        HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)len, 10);
     }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * Configuração do clock do sistema — 84 MHz (HSI PLL)
- * Gerado pelo STM32CubeMX; ajuste conforme o seu .ioc
+ * Configuração do clock do sistema — 72 MHz (HSE 8 MHz × PLL × 9)
+ * STM32F103C8: HSE=8MHz, PLLMUL=9 → SYSCLK=72MHz
+ *              APB1=36MHz (÷2), APB2=72MHz (÷1)
+ *              Timer clock = APB1 × 2 = 72 MHz
  * ═══════════════════════════════════════════════════════════════════════ */
 
 static void SystemClock_Config(void)
@@ -226,16 +232,13 @@ static void SystemClock_Config(void)
     RCC_OscInitTypeDef RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-    /* Habilita HSI e configura PLL para 84 MHz */
-    RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI;
-    RCC_OscInitStruct.HSIState            = RCC_HSI_ON;
-    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    /* Habilita HSE e configura PLL para 72 MHz */
+    RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSE;
+    RCC_OscInitStruct.HSEState            = RCC_HSE_ON;
+    RCC_OscInitStruct.HSEPredivValue      = RCC_HSE_PREDIV_DIV1;
     RCC_OscInitStruct.PLL.PLLState        = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource       = RCC_PLLSOURCE_HSI;
-    RCC_OscInitStruct.PLL.PLLM            = 8;
-    RCC_OscInitStruct.PLL.PLLN            = 84;
-    RCC_OscInitStruct.PLL.PLLP            = RCC_PLLP_DIV2;
-    RCC_OscInitStruct.PLL.PLLQ            = 4;
+    RCC_OscInitStruct.PLL.PLLSource       = RCC_PLLSOURCE_HSE;
+    RCC_OscInitStruct.PLL.PLLMUL          = RCC_PLL_MUL9;  /* 8 × 9 = 72 MHz */
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
         Error_Handler();
     }
@@ -244,8 +247,8 @@ static void SystemClock_Config(void)
                                      | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
     RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
     RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;
-    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;   /* APB1 = 36 MHz (max) */
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;   /* APB2 = 72 MHz */
 
     if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
         Error_Handler();
@@ -253,7 +256,7 @@ static void SystemClock_Config(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * MX_GPIO_Init — configura pinos DIR (PA6) e EN (PA7)
+ * MX_GPIO_Init — configura pinos DIR (PA1) e EN (PA2)
  * ═══════════════════════════════════════════════════════════════════════ */
 
 static void MX_GPIO_Init(void)
@@ -263,26 +266,27 @@ static void MX_GPIO_Init(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
 
-    /* PA6 = DIR, PA7 = EN — saídas digitais */
-    GPIO_InitStruct.Pin   = GPIO_PIN_6 | GPIO_PIN_7;
+    /* PA1 = DIR, PA2 = EN — saídas digitais */
+    GPIO_InitStruct.Pin   = GPIO_PIN_1 | GPIO_PIN_2;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* PC13 = botão USER (pull-up interno, sem interrupção) */
+    /* PC13 = LED onboard / botão homing (pull-up interno) */
     GPIO_InitStruct.Pin  = GPIO_PIN_13;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
     /* Níveis iniciais: DIR=LOW (CW), EN=HIGH (desabilitado) */
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_2, GPIO_PIN_SET);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * MX_ADC1_Init — ADC1 canal 0 (PA0), resolução 10-bit, polling
+ * MX_ADC1_Init — ADC1 canal 0 (PA0), resolução 12-bit, polling
+ *   STM32F103C8: ADC sempre 12-bit, sem campo Resolution/ClockPrescaler
  * ═══════════════════════════════════════════════════════════════════════ */
 
 static void MX_ADC1_Init(void)
@@ -292,17 +296,13 @@ static void MX_ADC1_Init(void)
     __HAL_RCC_ADC1_CLK_ENABLE();
 
     hadc1.Instance                   = ADC1;
-    hadc1.Init.ClockPrescaler        = ADC_CLOCK_SYNC_PCLK_DIV4;
-    hadc1.Init.Resolution            = ADC_RESOLUTION_10B;
-    hadc1.Init.ScanConvMode          = DISABLE;
-    hadc1.Init.ContinuousConvMode    = DISABLE;
-    hadc1.Init.DiscontinuousConvMode = DISABLE;
-    hadc1.Init.ExternalTrigConvEdge  = ADC_EXTERNALTRIGCONVEDGE_NONE;
-    hadc1.Init.ExternalTrigConv      = ADC_SOFTWARE_START;
     hadc1.Init.DataAlign             = ADC_DATAALIGN_RIGHT;
+    hadc1.Init.ScanConvMode          = ADC_SCAN_DISABLE;
+    hadc1.Init.ContinuousConvMode    = DISABLE;
     hadc1.Init.NbrOfConversion       = 1;
-    hadc1.Init.DMAContinuousRequests = DISABLE;
-    hadc1.Init.EOCSelection          = ADC_EOC_SINGLE_CONV;
+    hadc1.Init.DiscontinuousConvMode = ADC_DISCONTINUOUS_DISABLE;
+    hadc1.Init.NbrOfDiscConversion   = 0;
+    hadc1.Init.ExternalTrigConv      = ADC_SOFTWARE_START;
 
     if (HAL_ADC_Init(&hadc1) != HAL_OK) {
         Error_Handler();
@@ -315,94 +315,46 @@ static void MX_ADC1_Init(void)
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* Canal 0 com tempo de amostragem de 3 ciclos */
+    /* Canal 0 com tempo de amostragem de 7.5 ciclos */
     sConfig.Channel      = ADC_CHANNEL_0;
-    sConfig.Rank         = 1;
-    sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+    sConfig.Rank         = ADC_REGULAR_RANK_1;
+    sConfig.SamplingTime = ADC_SAMPLETIME_7CYCLES_5;
     if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) {
         Error_Handler();
     }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * MX_TIM2_Init — TIM2 PWM para sinal STEP (PA5, canal 1)
- *   Clock TIM2 = 84 MHz,  Prescaler = 83 → tick = 1 µs
+ * MX_TIM3_Init — TIM3 PWM para sinal STEP (PA6, canal 1)
+ *   STM32F103C8: Clock TIM3 = 72 MHz, Prescaler = 71 → tick = 1 µs
  *   ARR inicial = 999 → 1 kHz (ajustado em tempo real pelo stepper)
+ *   TIM3_CH1 → PA6 (AF_PP, sem remap)
  * ═══════════════════════════════════════════════════════════════════════ */
 
-static void MX_TIM2_Init(void)
+static void MX_TIM3_Init(void)
 {
     TIM_ClockConfigTypeDef   sClockSourceConfig = {0};
     TIM_MasterConfigTypeDef  sMasterConfig      = {0};
     TIM_OC_InitTypeDef       sConfigOC          = {0};
     GPIO_InitTypeDef         GPIO_InitStruct     = {0};
 
-    __HAL_RCC_TIM2_CLK_ENABLE();
+    __HAL_RCC_TIM3_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
-    /* PA5 → TIM2_CH1 (AF1) */
-    GPIO_InitStruct.Pin       = GPIO_PIN_5;
-    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull      = GPIO_NOPULL;
-    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
+    /* PA6 → TIM3_CH1 (AF_PP, sem campo Alternate no F103) */
+    GPIO_InitStruct.Pin   = GPIO_PIN_6;
+    GPIO_InitStruct.Mode  = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull  = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* Prescaler 83 → tick = 1 µs (84 MHz / 84 = 1 MHz) */
-    htim2.Instance               = TIM2;
-    htim2.Init.Prescaler         = 83;
-    htim2.Init.CounterMode       = TIM_COUNTERMODE_UP;
-    htim2.Init.Period            = 999;          /* ARR inicial */
-    htim2.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
-    htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-
-    if (HAL_TIM_Base_Init(&htim2) != HAL_OK) {
-        Error_Handler();
-    }
-
-    sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-    if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK) {
-        Error_Handler();
-    }
-    if (HAL_TIM_PWM_Init(&htim2) != HAL_OK) {
-        Error_Handler();
-    }
-
-    sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-    sMasterConfig.MasterSlaveMode     = TIM_MASTERSLAVEMODE_DISABLE;
-    if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) {
-        Error_Handler();
-    }
-
-    /* Canal 1: PWM modo 1, duty 50% */
-    sConfigOC.OCMode       = TIM_OCMODE_PWM1;
-    sConfigOC.Pulse        = 499;   /* duty 50% para ARR=999 */
-    sConfigOC.OCPolarity   = TIM_OCPOLARITY_HIGH;
-    sConfigOC.OCFastMode   = TIM_OCFAST_DISABLE;
-    if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
-        Error_Handler();
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
- * MX_TIM3_Init — TIM3 interrupção a 1 kHz (loop de controle)
- *   Clock TIM3 = 84 MHz,  Prescaler = 8399, ARR = 9
- *   f = 84.000.000 / (8400 × 10) = 1000 Hz
- * ═══════════════════════════════════════════════════════════════════════ */
-
-static void MX_TIM3_Init(void)
-{
-    TIM_ClockConfigTypeDef  sClockSourceConfig = {0};
-    TIM_MasterConfigTypeDef sMasterConfig      = {0};
-
-    __HAL_RCC_TIM3_CLK_ENABLE();
-
+    /* Prescaler 71 → tick = 1 µs (72 MHz / 72 = 1 MHz) */
     htim3.Instance               = TIM3;
-    htim3.Init.Prescaler         = 8399;
+    htim3.Init.Prescaler         = 71;
     htim3.Init.CounterMode       = TIM_COUNTERMODE_UP;
-    htim3.Init.Period            = 9;
+    htim3.Init.Period            = 999;          /* ARR inicial */
     htim3.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
-    htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+    htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
 
     if (HAL_TIM_Base_Init(&htim3) != HAL_OK) {
         Error_Handler();
@@ -412,6 +364,9 @@ static void MX_TIM3_Init(void)
     if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK) {
         Error_Handler();
     }
+    if (HAL_TIM_PWM_Init(&htim3) != HAL_OK) {
+        Error_Handler();
+    }
 
     sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
     sMasterConfig.MasterSlaveMode     = TIM_MASTERSLAVEMODE_DISABLE;
@@ -419,40 +374,90 @@ static void MX_TIM3_Init(void)
         Error_Handler();
     }
 
-    /* Habilita interrupção TIM3 no NVIC */
-    HAL_NVIC_SetPriority(TIM3_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(TIM3_IRQn);
+    /* Canal 1: PWM modo 1, duty 50% */
+    sConfigOC.OCMode       = TIM_OCMODE_PWM1;
+    sConfigOC.Pulse        = 499;   /* duty 50% para ARR=999 */
+    sConfigOC.OCPolarity   = TIM_OCPOLARITY_HIGH;
+    sConfigOC.OCFastMode   = TIM_OCFAST_DISABLE;
+    if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
+        Error_Handler();
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * MX_USART2_UART_Init — USART2 115200 baud (PA9=TX, PA10=RX)
+ * MX_TIM4_Init — TIM4 interrupção a 1 kHz (loop de controle)
+ *   STM32F103C8: Clock TIM4 = 72 MHz, Prescaler = 7199, ARR = 9
+ *   f = 72.000.000 / (7200 × 10) = 1000 Hz  →  Ts = 1 ms
  * ═══════════════════════════════════════════════════════════════════════ */
 
-static void MX_USART2_UART_Init(void)
+static void MX_TIM4_Init(void)
+{
+    TIM_ClockConfigTypeDef  sClockSourceConfig = {0};
+    TIM_MasterConfigTypeDef sMasterConfig      = {0};
+
+    __HAL_RCC_TIM4_CLK_ENABLE();
+
+    htim4.Instance               = TIM4;
+    htim4.Init.Prescaler         = 7199;
+    htim4.Init.CounterMode       = TIM_COUNTERMODE_UP;
+    htim4.Init.Period            = 9;
+    htim4.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
+    htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+
+    if (HAL_TIM_Base_Init(&htim4) != HAL_OK) {
+        Error_Handler();
+    }
+
+    sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+    if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK) {
+        Error_Handler();
+    }
+
+    sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+    sMasterConfig.MasterSlaveMode     = TIM_MASTERSLAVEMODE_DISABLE;
+    if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK) {
+        Error_Handler();
+    }
+
+    /* Habilita interrupção TIM4 no NVIC */
+    HAL_NVIC_SetPriority(TIM4_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(TIM4_IRQn);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * MX_USART1_UART_Init — USART1 115200 baud (PA9=TX, PA10=RX)
+ *   STM32F103C8: TX → GPIO_MODE_AF_PP, RX → GPIO_MODE_INPUT + PULLUP
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+static void MX_USART1_UART_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    __HAL_RCC_USART2_CLK_ENABLE();
+    __HAL_RCC_USART1_CLK_ENABLE();
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
-    /* PA9 = TX, PA10 = RX — função alternativa AF7 */
-    GPIO_InitStruct.Pin       = GPIO_PIN_9 | GPIO_PIN_10;
-    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull      = GPIO_NOPULL;
-    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
+    /* PA9 = TX — saída em modo alternate function push-pull */
+    GPIO_InitStruct.Pin   = GPIO_PIN_9;
+    GPIO_InitStruct.Mode  = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull  = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    huart2.Instance          = USART2;
-    huart2.Init.BaudRate     = 115200;
-    huart2.Init.WordLength   = UART_WORDLENGTH_8B;
-    huart2.Init.StopBits     = UART_STOPBITS_1;
-    huart2.Init.Parity       = UART_PARITY_NONE;
-    huart2.Init.Mode         = UART_MODE_TX_RX;
-    huart2.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
-    huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+    /* PA10 = RX — entrada com pull-up */
+    GPIO_InitStruct.Pin  = GPIO_PIN_10;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    if (HAL_UART_Init(&huart2) != HAL_OK) {
+    huart1.Instance          = USART1;
+    huart1.Init.BaudRate     = 115200;
+    huart1.Init.WordLength   = UART_WORDLENGTH_8B;
+    huart1.Init.StopBits     = UART_STOPBITS_1;
+    huart1.Init.Parity       = UART_PARITY_NONE;
+    huart1.Init.Mode         = UART_MODE_TX_RX;
+    huart1.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
+
+    if (HAL_UART_Init(&huart1) != HAL_OK) {
         Error_Handler();
     }
 }

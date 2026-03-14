@@ -1,15 +1,15 @@
 /**
  * @file    encoder.c
- * @brief   Implementação do encoder por potenciômetro multivolta (STM32F411)
+ * @brief   Implementação do encoder por potenciômetro multivolta (STM32F103C8)
  *
- * Lê o ADC 10-bit (0–1023), aplica filtro EMA e converte em ângulo/voltas/steps.
+ * Lê o ADC 12-bit (0–4095), aplica filtro EMA e converte em ângulo/voltas/steps.
  *
  * Fórmulas:
  *   filtered = ALPHA * raw + (1 - ALPHA) * filtered_prev
- *   angle_degrees = (filtered - 512) * (3600.0 / 512.0)
+ *   angle_degrees = (filtered - 2048) * (3600.0 / 2048.0)
  *   angle_turns   = angle_degrees / 360.0
  *   position_steps = (int32_t)(angle_turns * FULL_STEPS_PER_REV)
- *   position_normalized = (filtered - 512) / 512.0
+ *   position_normalized = (filtered - 2048) / 2048.0
  *
  * @author  rrmatos
  */
@@ -17,8 +17,8 @@
 #include "encoder.h"
 #include <math.h>
 
-/* Fator de conversão: (ADC_raw - 512) * escala → graus */
-#define DEG_SCALE   (POT_MAX_DEGREES / (float)(POT_ADC_CENTER))  /* 3600 / 512 */
+/* Fator de conversão: (ADC_raw - 2048) * escala → graus */
+#define DEG_SCALE   (POT_MAX_DEGREES / (float)(POT_ADC_CENTER))  /* 3600 / 2048 */
 
 /* ── Implementações ──────────────────────────────────────────────────── */
 
