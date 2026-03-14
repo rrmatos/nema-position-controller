@@ -27,7 +27,7 @@
  *  Saída:
  *    - v(t)        : velocidade instantânea em cada instante de amostragem
  *    - Período do STEP: T_step = 1 / v(t)
- *    - ARR do Timer: ARR = 1.000.000 / v(t)  (com prescaler 83 → 1 µs/tick)
+ *    - ARR do Timer: ARR = 1.000.000 / v(t)  (com Prescaler 71 → 1 µs/tick)
  *
  *  Nota: A malha de controle PID atualiza o setpoint de velocidade, e o
  *  gerador de perfil suaviza a transição entre velocidades para evitar
@@ -36,7 +36,7 @@
  * @todo Implementar:
  *       - Trajectory_Init()
  *       - Trajectory_Start()
- *       - Trajectory_Update() → chamado no callback do TIM3 (1 kHz)
+ *       - Trajectory_Update() → chamado no callback do TIM4 (1 kHz)
  *       - Trajectory_IsComplete()
  *       - Trajectory_Abort()
  *

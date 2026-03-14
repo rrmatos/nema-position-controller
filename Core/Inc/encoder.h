@@ -1,9 +1,9 @@
 /**
  * @file    encoder.h
- * @brief   Encoder baseado em potenciômetro multivolta para STM32F411
+ * @brief   Encoder baseado em potenciômetro multivolta para STM32F103C8
  *
- * Converte leitura ADC (0–1023) em ângulo, voltas e steps.
- * Faixa: ±10 voltas (20 voltas no total, center = 512 → 0°)
+ * Converte leitura ADC (0–4095) em ângulo, voltas e steps.
+ * Faixa: ±10 voltas (20 voltas no total, center = 2048 → 0°)
  * Filtro EMA passa-baixa: y[n] = ALPHA * x[n] + (1 - ALPHA) * y[n-1]
  *
  * @author  rrmatos
@@ -12,13 +12,13 @@
 #ifndef ENCODER_H
 #define ENCODER_H
 
-#include "stm32f4xx_hal.h"
+#include "stm32f1xx_hal.h"
 #include <stdint.h>
 
 /* ── Constantes do potenciômetro ─────────────────────────────────────── */
-#define POT_ADC_MIN          0          /**< Valor mínimo do ADC (10-bit) */
-#define POT_ADC_MAX          1023       /**< Valor máximo do ADC (10-bit) */
-#define POT_ADC_CENTER       512        /**< Centro do ADC → 0 graus / 0 voltas */
+#define POT_ADC_MIN          0          /**< Valor mínimo do ADC (12-bit) */
+#define POT_ADC_MAX          4095       /**< Valor máximo do ADC (12-bit) */
+#define POT_ADC_CENTER       2048       /**< Centro do ADC → 0 graus / 0 voltas */
 #define POT_MAX_TURNS        10         /**< Máximo de voltas em cada sentido (±10) */
 #define POT_MAX_DEGREES      3600.0f    /**< Faixa total em graus (±3600°) */
 
@@ -38,7 +38,7 @@
 typedef struct {
     ADC_HandleTypeDef *hadc;      /**< Handle do periférico ADC */
     uint32_t           adc_channel; /**< Canal ADC (ex.: ADC_CHANNEL_0) */
-    uint16_t           raw;         /**< Leitura bruta do ADC (0–1023) */
+    uint16_t           raw;         /**< Leitura bruta do ADC (0–4095) */
     float              filtered_raw; /**< Leitura após filtro EMA */
     float              angle_degrees; /**< Ângulo em graus (±3600°) */
     float              angle_turns;   /**< Ângulo em voltas (±10) */

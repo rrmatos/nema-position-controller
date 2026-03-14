@@ -1,11 +1,11 @@
-# Controlador de Posição NEMA 17 — STM32F411 Nucleo
+# Controlador de Posição NEMA 17 — STM32F103C8 Black Pill
 
 ![Linguagem](https://img.shields.io/badge/linguagem-C-blue?logo=c)
-![Plataforma](https://img.shields.io/badge/plataforma-STM32F411-brightgreen?logo=stmicroelectronics)
+![Plataforma](https://img.shields.io/badge/plataforma-STM32F103C8-brightgreen?logo=stmicroelectronics)
 ![Licença](https://img.shields.io/badge/licença-MIT-yellow)
 
 > Controlador de posição de malha fechada para motor de passo **NEMA 17**
-> usando **STM32F411 Nucleo**, potenciômetro multivolta como encoder,
+> usando **STM32F103C8 Black Pill**, potenciômetro multivolta como encoder,
 > controlador **PID** com bloco de **Deadzone** e geração de pulsos
 > STEP/DIR via Timer PWM.
 
@@ -19,7 +19,7 @@
 4. [Bloco Deadzone](#bloco-deadzone)
 5. [Perfil Trapezoidal de Velocidade](#perfil-trapezoidal-de-velocidade)
 6. [Componentes](#componentes)
-7. [Pinout STM32F411 Nucleo](#pinout-stm32f411-nucleo)
+7. [Pinout STM32F103C8 Black Pill](#pinout-stm32f103c8-black-pill)
 8. [Conversão ADC → Steps](#conversão-adc--steps)
 9. [Microstepping (A4988)](#microstepping-a4988)
 10. [Configuração dos Timers](#configuração-dos-timers)
@@ -39,33 +39,35 @@ Este projeto implementa um **controlador de posição de malha fechada** para
 motor de passo NEMA 17 com as seguintes características:
 
 - **Sensor de posição**: potenciômetro multivolta (±10 voltas) lido pelo
-  ADC de 10 bits (0–1023). O centro (512) corresponde a 0°.
+  ADC de 12 bits (0–4095). O centro (2048) corresponde a 0°.
 - **Controlador**: PID discreto com período de amostragem de 1 ms (1 kHz),
   equipado com bloco de **Deadzone** para eliminar oscilações em regime
   permanente e anti-windup por clamping da integral.
 - **Atuador**: motor de passo NEMA 17 acionado por driver A4988 ou
   DRV8825, com microstepping de 1/16 (3200 steps/revolução).
-- **Geração de pulsos STEP**: via Timer PWM (TIM2) com resolução de 1 µs.
-- **Telemetria**: envio de dados de estado via USART2 a 115200 baud (10 Hz).
+- **Geração de pulsos STEP**: via Timer PWM (TIM3_CH1, PA6) com resolução de 1 µs.
+- **Telemetria**: envio de dados de estado via USART1 a 115200 baud (10 Hz).
+- **Nota**: PA0 é usado exclusivamente para o ADC do potenciômetro; o STEP
+  foi movido para PA6 (TIM3_CH1) para evitar conflito com ADC1_IN0.
 
 ---
 
 ## Diagrama de Arquitetura
 
 ```
-                        STM32F411 Nucleo
+                        STM32F103C8 Black Pill
   ┌──────────────────────────────────────────────────────────┐
   │                                                          │
-  │  [Interface UART] ◄──── USART2 (PA9/PA10)               │
+  │  [Interface UART] ◄──── USART1 (PA9/PA10)               │
   │         ▲                  │ telemetria 115200 baud      │
   │         │                  │                             │
   │  [ADC1 PA0]                ▼                             │
   │  Potenciômetro    ┌─────────────────┐                    │
-  │  Multivolta  ────►│  Loop Controle  │─────► TIM2 PWM     │
-  │  (10-bit ADC)     │  1 kHz (TIM3)  │       (PA5 STEP)   │
+  │  Multivolta  ────►│  Loop Controle  │─────► TIM3 PWM     │
+  │  (12-bit ADC)     │  1 kHz (TIM4)  │       (PA6 STEP)   │
   │                   │  PID+Deadzone   │                    │
-  │                   └─────────────────┘       PA6 DIR      │
-  │                                             PA7 EN       │
+  │                   └─────────────────┘       PA1 DIR      │
+  │                                             PA2 EN       │
   └──────────────────────────────────────────────────────────┘
              │                                      │
              │◄─────── feedback posição             ▼
@@ -111,7 +113,7 @@ motor de passo NEMA 17 com as seguintes características:
                  ▼                                               │
          ┌───────────────┐                                       │
          │  Gerador STEP │  ARR = 1.000.000 / steps_s           │
-         │  (TIM2 PWM)   │  prescaler 83 → tick 1µs             │
+         │  (TIM3 PWM)   │  Prescaler 71 → tick 1µs             │
          └───────┬───────┘                                       │
                  │ pulsos STEP + sinal DIR                       │
                  ▼                                               │
@@ -122,7 +124,7 @@ motor de passo NEMA 17 com as seguintes características:
                  │ posição mecânica                              │
                  ▼                                               │
          ┌───────────────┐                                       │
-         │    Encoder    │  ADC 10-bit → EMA → steps            │
+         │    Encoder    │  ADC 12-bit → EMA → steps            │
          │  (Pot ADC)    │──────────────────────────────────────┘
          └───────────────┘
 ```
@@ -200,7 +202,7 @@ O bloco de Deadzone elimina oscilações (chatter) quando o erro é pequeno:
 
 | Componente            | Modelo / Especificação                  | Função                                |
 |-----------------------|-----------------------------------------|---------------------------------------|
-| Microcontrolador      | STM32F411RE (Nucleo-64)                 | Processamento e controle              |
+| Microcontrolador      | STM32F103C8T6 Black Pill                | Processamento e controle              |
 | Motor de passo        | NEMA 17 — 200 steps/rev, 12–24 V       | Atuador                               |
 | Driver do motor       | A4988 ou DRV8825                        | Interface de potência STEP/DIR        |
 | Encoder de posição    | Potenciômetro multivolta 10 kΩ (±10V)  | Sensor de posição (realimentação)     |
@@ -210,51 +212,55 @@ O bloco de Deadzone elimina oscilações (chatter) quando o erro é pequeno:
 
 ---
 
-## Pinout STM32F411 Nucleo
+## Pinout STM32F103C8 Black Pill
+
+> ⚠️ **Nota sobre conflito PA0**: No STM32F103C8, PA0 é simultaneamente
+> TIM2_CH1 e ADC1_IN0. Para evitar conflito, o sinal STEP foi movido para
+> **PA6 (TIM3_CH1)**, mantendo PA0 exclusivamente para o ADC do potenciômetro.
 
 ### Tabela de Pinos
 
-| Pino STM32 | Sinal    | Destino              | Função                        |
-|------------|----------|----------------------|-------------------------------|
-| PA0        | ADC1_IN0 | Potenciômetro (eixo) | Leitura de posição (ADC)      |
-| PA5        | TIM2_CH1 | Driver STEP          | Pulsos de passo (PWM)         |
-| PA6        | GPIO OUT | Driver DIR           | Direção de rotação            |
-| PA7        | GPIO OUT | Driver EN            | Habilitação do driver (LOW)   |
-| PA9        | USART2_TX| USB/Serial           | Transmissão de telemetria     |
-| PA10       | USART2_RX| USB/Serial           | Recepção de comandos          |
-| PC13       | GPIO IN  | Botão USER           | Entrada de controle / reset   |
+| Pino STM32 | Sinal     | Destino              | Função                         |
+|------------|-----------|----------------------|--------------------------------|
+| PA0        | ADC1_IN0  | Potenciômetro (eixo) | Leitura de posição (ADC 12-bit)|
+| PA1        | GPIO OUT  | Driver DIR           | Direção de rotação             |
+| PA2        | GPIO OUT  | Driver EN            | Habilitação do driver (LOW)    |
+| PA6        | TIM3_CH1  | Driver STEP          | Pulsos de passo (PWM)          |
+| PA9        | USART1_TX | USB/Serial           | Transmissão de telemetria      |
+| PA10       | USART1_RX | USB/Serial           | Recepção de comandos           |
+| PC13       | GPIO IN   | LED onboard / homing | Entrada de controle / reset    |
 
-### Diagrama ASCII do Nucleo-64
+### Diagrama ASCII do Black Pill
 
 ```
-         STM32F411 Nucleo-64
+         STM32F103C8 Black Pill
   ┌──────────────────────────────┐
   │  ┌─────────────────────┐     │
   │  │    USB (CN1)        │     │
   │  └─────────────────────┘     │
   │                               │
-  │  PC13 ●── Botão USER         │
+  │  PC13 ●── LED onboard        │
   │                               │
-  │  PA0  ●── POT (ADC)          │
-  │  PA5  ●── STEP ──► A4988     │
-  │  PA6  ●── DIR  ──► A4988     │
-  │  PA7  ●── EN   ──► A4988     │
+  │  PA0  ●── POT (ADC1_IN0)     │
+  │  PA1  ●── DIR  ──► A4988     │
+  │  PA2  ●── EN   ──► A4988     │
+  │  PA6  ●── STEP ──► A4988     │
   │                               │
   │  PA9  ●── TX ──► USB/Serial  │
   │  PA10 ●── RX ──► USB/Serial  │
   │                               │
-  │         STM32F411RE           │
+  │        STM32F103C8T6          │
   └──────────────────────────────┘
 ```
 
 ### Conexão com Driver A4988/DRV8825
 
 ```
-  STM32 Nucleo            A4988 / DRV8825
+  STM32 Black Pill        A4988 / DRV8825
   ┌─────────┐             ┌─────────────┐
-  │ PA5     │────STEP────►│ STEP        │
-  │ PA6     │────DIR─────►│ DIR         │
-  │ PA7     │────EN──────►│ EN (LOW=ON) │
+  │ PA6     │────STEP────►│ STEP        │
+  │ PA1     │────DIR─────►│ DIR         │
+  │ PA2     │────EN──────►│ EN (LOW=ON) │
   │ GND     │────GND─────►│ GND         │
   │ +3.3V   │────VDD─────►│ VDD (lógica)│
   └─────────┘             │ VMOT ◄── 12-24V
@@ -277,21 +283,21 @@ O bloco de Deadzone elimina oscilações (chatter) quando o erro é pequeno:
       │                           ╔════╝
       │                      ╔════╝
    +0 │─────────────────╔════╝────────────────────►  ADC raw
-      │            ╔════╝         512
+      │            ╔════╝         2048
       │       ╔════╝
       │  ╔════╝
 -32000│══╝
-      0         256        512        768       1023
+      0       1024       2048       3072      4095
 
   Fórmula:
-    angle = (ADC - 512) × (3600 / 512)    [graus, ±3600°]
-    turns = angle / 360                    [voltas, ±10]
-    steps = turns × 3200                   [steps, ±32000]
+    angle = (ADC - 2048) × (3600 / 2048)    [graus, ±3600°]
+    turns = angle / 360                      [voltas, ±10]
+    steps = turns × 3200                     [steps, ±32000]
 
   Pontos notáveis:
     ADC=0    → steps = −32000  (−10 voltas, −3600°)
-    ADC=512  → steps =       0  (centro, 0°)
-    ADC=1023 → steps ≈ +31930  (+9.98 voltas, +3592°)
+    ADC=2048 → steps =       0  (centro, 0°)
+    ADC=4095 → steps ≈ +31984  (+9.99 voltas, +3598°)
 ```
 
 ---
@@ -313,11 +319,12 @@ O bloco de Deadzone elimina oscilações (chatter) quando o erro é pequeno:
 
 ## Configuração dos Timers
 
-### TIM2 — Geração de STEP (PWM)
+### TIM3 — Gerador de Pulsos STEP (PWM)
 
 ```
-  Clock APB1 × 2 = 84 MHz
-  Prescaler = 83  →  tick = 1 / (84 MHz / 84) = 1 µs
+  STM32F103C8: Clock timer = 72 MHz
+  Prescaler = 71  →  tick = 1 / (72 MHz / 72) = 1 µs
+  Channel 1: PWM Mode 1 — PA6 (STEP output)
 
   ARR = 1.000.000 / steps_per_sec
 
@@ -336,32 +343,32 @@ O bloco de Deadzone elimina oscilações (chatter) quando o erro é pequeno:
   Mínimo pulso STEP: 1 µs (spec. A4988 ≥ 1 µs)
 ```
 
-### TIM3 — Loop de Controle (Interrupção 1 kHz)
+### TIM4 — Loop de Controle (Interrupção 1 kHz)
 
 ```
-  Clock APB1 × 2 = 84 MHz
-  Prescaler = 8399
+  STM32F103C8: Clock timer = 72 MHz
+  Prescaler = 7199  →  tick = 100 µs (10 kHz)
   ARR = 9
 
-  f = 84.000.000 / (8400 × 10) = 1000 Hz  →  Ts = 1 ms
+  f = 72.000.000 / (7200 × 10) = 1000 Hz  →  Ts = 1 ms
 ```
 
 ---
 
 ## Análise de Resolução
 
-| Parâmetro         | ADC 10-bit        | ADC 12-bit (upgrade) |
-|-------------------|-------------------|-----------------------|
-| Contagens totais  | 1024              | 4096                  |
-| Faixa de ângulo   | ±3600°            | ±3600°                |
-| Graus por LSB     | 7.03° / contagem  | 1.76° / contagem      |
-| Steps por LSB     | 62.5 steps/LSB    | 15.6 steps/LSB        |
-| Voltas por LSB    | 0.0195 voltas/LSB | 0.0049 voltas/LSB     |
-| Deadzone mínima   | ~63 steps         | ~16 steps             |
+| Parâmetro         | ADC 12-bit (STM32F103C8)  |
+|-------------------|---------------------------|
+| Contagens totais  | 4096                      |
+| Faixa de ângulo   | ±3600°                    |
+| Graus por LSB     | 1.76° / contagem          |
+| Steps por LSB     | 15.6 steps/LSB            |
+| Voltas por LSB    | 0.0049 voltas/LSB         |
+| Deadzone mínima   | ~16 steps                 |
 
-> **Dica**: Para melhor resolução, configure o ADC para **12 bits** no
-> CubeMX (`ADC_RESOLUTION_12B`) e ajuste `POT_ADC_MAX=4095`,
-> `POT_ADC_CENTER=2048` em `encoder.h`.
+> O ADC de 12 bits do STM32F103C8 oferece resolução angular de
+> **1.76°/LSB** (3600° ÷ 2048 contagens efetivas), 4× melhor que
+> um ADC de 10 bits. A deadzone de ±4 steps corresponde a ≈ ±0.45°.
 
 ---
 
@@ -427,9 +434,9 @@ O bloco de Deadzone elimina oscilações (chatter) quando o erro é pequeno:
 
 ### Pré-requisitos
 
-- **STM32CubeIDE** 1.14 ou superior
+- **STM32CubeIDE** 1.14 ou superior (target: STM32F103C8T6)
 - **STM32CubeMX** (integrado ao IDE)
-- Placa **STM32F411 Nucleo-64**
+- Placa **STM32F103C8 Black Pill**
 - Driver **A4988** ou **DRV8825**
 - Motor **NEMA 17**
 - Potenciômetro multivolta (ex.: Bourns 3590S, 10 kΩ)
@@ -447,7 +454,7 @@ O bloco de Deadzone elimina oscilações (chatter) quando o erro é pequeno:
    - Selecione o diretório clonado
 
 3. **Configure o projeto (.ioc)**
-   - Crie um novo `.ioc` para o STM32F411RE
+   - Crie um novo `.ioc` para o **STM32F103C8T6**
    - Configure os periféricos conforme a seção
      [Configuração dos Timers](#configuração-dos-timers)
    - Copie os arquivos de `Core/Inc/` e `Core/Src/` para o projeto gerado
@@ -464,8 +471,8 @@ O bloco de Deadzone elimina oscilações (chatter) quando o erro é pequeno:
 6. **Monitor serial** — abra um terminal serial (115200 baud) e observe
    a telemetria:
    ```
-   ADC: 512 POS:     0 VOLTAS: +0.00 SP:    0 ERR:   +0.0 PID:   +0.0 DZ:1
-   ADC: 580 POS:   426 VOLTAS: +0.13 SP:    0 ERR: -426.0 PID:-2556.0 DZ:0
+   ADC:2048 POS:     0 VOLTAS: +0.00 SP:    0 ERR:   +0.0 PID:   +0.0 DZ:1
+   ADC:2300 POS:   590 VOLTAS: +0.18 SP:    0 ERR: -590.0 PID:-3540.0 DZ:0
    ```
 
 ---
@@ -479,7 +486,7 @@ O bloco de Deadzone elimina oscilações (chatter) quando o erro é pequeno:
 | `KP`          | 6.0     | Resposta proporcional ao erro               |
 | `KI`          | 0.3     | Elimina erro estacionário                   |
 | `KD`          | 0.15    | Amortece oscilações e melhora estabilidade  |
-| `Ts`          | 1 ms    | Período de amostragem (1 kHz via TIM3)      |
+| `Ts`          | 1 ms    | Período de amostragem (1 kHz via TIM4)      |
 | `OUT_MAX`     | 3200    | Velocidade máxima em steps/s                |
 | `DEADZONE`    | 4.0     | Zona morta em steps (±4 steps ≈ ±0.45°)    |
 

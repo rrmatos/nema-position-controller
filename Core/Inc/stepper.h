@@ -3,13 +3,13 @@
  * @brief   Driver para motor de passo NEMA 17 com geração de STEP/DIR via Timer PWM
  *
  * Configuração de hardware:
- *  - PA5 → STEP (TIM2_CH1, PWM)
- *  - PA6 → DIR  (GPIO saída)
- *  - PA7 → EN   (GPIO saída, ativo em LOW para A4988/DRV8825)
+ *  - PA6 → STEP (TIM3_CH1, PWM)
+ *  - PA1 → DIR  (GPIO saída)
+ *  - PA2 → EN   (GPIO saída, ativo em LOW para A4988/DRV8825)
  *
- * Timer (TIM2):
- *  - Clock: 84 MHz (APB1 × 2 no STM32F411)
- *  - Prescaler: 83 → tick = 1 µs
+ * Timer (TIM3):
+ *  - Clock: 72 MHz (STM32F103C8)
+ *  - Prescaler: 71 → tick = 1 µs
  *  - ARR = 1.000.000 / steps_per_sec → período do STEP em µs
  *
  * @author  rrmatos
@@ -18,7 +18,7 @@
 #ifndef STEPPER_H
 #define STEPPER_H
 
-#include "stm32f4xx_hal.h"
+#include "stm32f1xx_hal.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -83,7 +83,7 @@ typedef struct {
 /**
  * @brief Inicializa o driver do motor de passo
  * @param stp        Ponteiro para a estrutura do stepper
- * @param htim       Handle do Timer para STEP (TIM2)
+ * @param htim       Handle do Timer para STEP (TIM3)
  * @param channel    Canal PWM (ex.: TIM_CHANNEL_1)
  * @param dir_port   Porta GPIO do pino DIR
  * @param dir_pin    Pino GPIO do DIR

@@ -3,14 +3,14 @@
  * @brief   Implementação do driver NEMA 17 com STEP/DIR via Timer PWM
  *
  * Geração do sinal STEP:
- *   - Timer configurado com prescaler 83 (clock 84 MHz → tick = 1 µs)
+ *   - STM32F103C8: Clock = 72 MHz, Prescaler = 71 → tick = 1 µs
  *   - ARR = 1.000.000 / steps_per_sec  (período do STEP em µs)
  *   - Pulse (CCR) = ARR / 2            (duty cycle 50%)
  *
  * Pinos:
- *   - PA5 (TIM2_CH1) → STEP (PWM)
- *   - PA6             → DIR  (GPIO)
- *   - PA7             → EN   (GPIO, LOW = habilitado)
+ *   - PA6 (TIM3_CH1) → STEP (PWM)
+ *   - PA1             → DIR  (GPIO)
+ *   - PA2             → EN   (GPIO, LOW = habilitado)
  *
  * @author  rrmatos
  */
@@ -18,7 +18,7 @@
 #include "stepper.h"
 #include <math.h>
 
-/* Frequência de tick do timer em Hz (prescaler 83, clock 84 MHz) */
+/* Frequência de tick do timer em Hz (Prescaler 71, clock 72 MHz → 1 MHz) */
 #define TIMER_TICK_HZ   1000000UL
 
 /* ── Implementações ──────────────────────────────────────────────────── */
