@@ -43,6 +43,11 @@
 #include "encoder.h"
 #include "pid_controller.h"
 #include "stepper.h"
+#include "safety.h"
+#include "estop.h"
+#include "limits.h"
+#include "watchdog.h"
+#include "fault_logger.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -70,6 +75,8 @@ UART_HandleTypeDef huart1;  /**< USART1 — debug/telemetria (PA9=TX, PA10=RX) *
 static Encoder_Pot_t encoder;    /**< Encoder por potenciômetro */
 static PID_t         pid;        /**< Controlador PID com deadzone */
 static Stepper_t     stepper;    /**< Driver do motor de passo */
+static Safety_t      safety;     /**< Máquina de estados de segurança */
+static Limits_t      limits;     /**< Verificações de limites de segurança */
 
 /* ── Variáveis de controle ───────────────────────────────────────────── */
 
@@ -98,20 +105,27 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
 
-    /* ── 2. Inicialização dos periféricos ────────────────────────────── */
+    /* ── 2. Segurança: DEVE ser inicializada o mais cedo possível ───── */
+    /* Coloca hardware em estado seguro (freio engajado, STO ativo)      */
+    FaultLogger_Init();
+    EStop_Init();          /* ← Freio ENGAJADO, STO ATIVO a partir daqui */
+    Limits_Init(&limits);
+    Safety_Init(&safety);
+
+    /* ── 3. Inicialização dos periféricos ────────────────────────────── */
     MX_GPIO_Init();
     MX_ADC1_Init();
     MX_TIM3_Init();
     MX_TIM4_Init();
     MX_USART1_UART_Init();
 
-    /* ── 3. Inicialização dos módulos de controle ────────────────────── */
+    /* ── 4. Inicialização dos módulos de controle ────────────────────── */
 
-    /* Motor: TIM3 canal 1, DIR=PA1, EN=PA2 */
+    /* Motor: TIM3 canal 1, DIR=PA1, EN=PA2 (ainda desabilitado) */
     Stepper_Init(&stepper, &htim3, TIM_CHANNEL_1,
                  GPIOA, GPIO_PIN_1,
                  GPIOA, GPIO_PIN_2);
-    Stepper_Enable(&stepper);
+    /* NÃO habilita o motor aqui — espera o auto-teste */
 
     /* Encoder: ADC1, canal 0 (PA0) */
     Encoder_Pot_Init(&encoder, &hadc1, ADC_CHANNEL_0);
@@ -121,44 +135,101 @@ int main(void)
              PID_SAMPLE_TIME, -PID_OUT_MAX, PID_OUT_MAX);
     PID_SetDeadzone(&pid, PID_DEADZONE);
 
-    /* ── 4. Lê posição inicial e usa como setpoint (não move ao ligar) ── */
+    /* ── 5. Auto-teste de segurança ──────────────────────────────────── */
+    if (!Safety_RunSelfTest(&safety)) {
+        /* Auto-teste falhou: pisca alarme indefinidamente, watchdog vai resetar */
+        EStop_TriggerEmergencySequence();
+        while (1) {
+            EStop_AlarmOn();
+            HAL_Delay(150);
+            EStop_AlarmOff();
+            HAL_Delay(150);
+            /* Não alimenta o watchdog → reset em 500 ms → recomeça do início */
+        }
+    }
+
+    /* ── 6. Auto-teste OK: libera motor ──────────────────────────────── */
+    EStop_BrakeRelease();     /* Libera freio mecânico  */
+    EStop_STO_Deactivate();   /* Permite torque no driver */
+    Stepper_Enable(&stepper); /* Habilita driver A4988/DRV8825 */
+
+    /* ── 7. Lê posição inicial e usa como setpoint (não move ao ligar) ── */
     Encoder_Pot_Update(&encoder);
     setpoint = (float)Encoder_Pot_GetSteps(&encoder);
 
-    /* ── 5. Inicia timer de controle (TIM4 → 1 kHz) ─────────────────── */
+    /* ── 8. Inicia watchdog (ÚLTIMO passo — após tudo inicializado) ─── */
+    SafeWatchdog_Init();
+
+    /* ── 9. Inicia timer de controle (TIM4 → 1 kHz) ─────────────────── */
     HAL_TIM_Base_Start_IT(&htim4);
 
-    /* ── 6. Loop principal ───────────────────────────────────────────── */
+    /* ── 10. Loop principal ──────────────────────────────────────────── */
     while (1) {
         /* Aguarda a flag setada pelo callback do TIM4 */
         if (control_flag) {
             control_flag = 0;
 
-            /* a) Lê encoder */
+            /* a) Alimenta o watchdog (sempre, para evitar reset em loop) */
+            SafeWatchdog_Kick();
+
+            /* b) Verifica E-Stop (prioridade máxima) */
+            bool estop_active = EStop_IsActive();
+            if (estop_active) {
+                EStop_TriggerEmergencySequence();
+                Stepper_Stop(&stepper);
+                Stepper_Disable(&stepper);
+            }
+
+            /* c) Lê encoder */
             Encoder_Pot_Update(&encoder);
             float pos_atual = (float)Encoder_Pot_GetSteps(&encoder);
 
-            /* b) Calcula saída PID */
-            float pid_output = PID_Compute(&pid, setpoint, pos_atual);
+            /* d) Atualiza verificações de limite */
+            Limits_Update(&limits,
+                          (int32_t)encoder.position_steps,
+                          stepper.current_speed,
+                          encoder.raw,
+                          stepper.is_moving);
 
-            /* c) Aplica ao motor */
-            if (PID_IsInDeadzone(&pid)) {
-                /* Dentro da deadzone: para o motor */
-                Stepper_Stop(&stepper);
-            } else {
-                /* Define direção conforme sinal da saída PID */
-                if (pid_output > 0.0f) {
-                    Stepper_SetDirection(&stepper, STEPPER_DIR_CW);
+            /* e) Atualiza máquina de estados de segurança */
+            Safety_Update(&safety, estop_active, Limits_GetFaultFlags(&limits));
+
+            /* f) Controla motor apenas se sistema seguro */
+            float pid_output = 0.0f;
+            if (Safety_IsSafeToOperate(&safety)) {
+                /* f1) Calcula saída PID */
+                pid_output = PID_Compute(&pid, setpoint, pos_atual);
+
+                /* f2) Aplica ao motor */
+                if (PID_IsInDeadzone(&pid)) {
+                    Stepper_Stop(&stepper);
+                    Limits_NotifyMovementEnd(&limits);
                 } else {
-                    Stepper_SetDirection(&stepper, STEPPER_DIR_CCW);
+                    if (!stepper.is_moving) {
+                        Limits_NotifyMovementStart(&limits,
+                                                   (int32_t)encoder.position_steps);
+                    }
+                    if (pid_output > 0.0f) {
+                        Stepper_SetDirection(&stepper, STEPPER_DIR_CW);
+                    } else {
+                        Stepper_SetDirection(&stepper, STEPPER_DIR_CCW);
+                    }
+                    uint32_t speed = (uint32_t)fabsf(pid_output);
+                    Stepper_SetSpeedSteps(&stepper, speed);
                 }
-
-                /* Define velocidade proporcional ao módulo da saída PID */
-                uint32_t speed = (uint32_t)fabsf(pid_output);
-                Stepper_SetSpeedSteps(&stepper, speed);
+            } else {
+                /* Sistema não seguro: para motor e garante estado seguro */
+                Stepper_Stop(&stepper);
+                Limits_NotifyMovementEnd(&limits);
+                if (!estop_active) {
+                    /* Se não é E-Stop físico, ainda assim mantém STO ativo */
+                    EStop_STO_Activate();
+                    EStop_BrakeEngage();
+                    EStop_AlarmOn();
+                }
             }
 
-            /* d) Atualiza posição (integra steps a partir da velocidade) */
+            /* g) Atualiza posição estimada (integra steps) */
             if (stepper.is_moving) {
                 if (stepper.direction == STEPPER_DIR_CW) {
                     stepper.current_pos += (int32_t)(stepper.current_speed
@@ -169,7 +240,7 @@ int main(void)
                 }
             }
 
-            /* e) Telemetria a ~10 Hz */
+            /* h) Telemetria a ~10 Hz */
             telem_count++;
             if (telem_count >= TELEM_DIVIDER) {
                 telem_count = 0;
@@ -206,14 +277,15 @@ static void Send_Telemetry(float pid_output)
 
     len = snprintf(buf, sizeof(buf),
                    "ADC:%4u POS:%6ld VOLTAS:%+6.2f SP:%6.0f "
-                   "ERR:%+7.1f PID:%+7.1f DZ:%d\r\n",
+                   "ERR:%+7.1f PID:%+7.1f DZ:%d SAF:%s\r\n",
                    (unsigned int)encoder.raw,
                    (long)encoder.position_steps,
                    (double)encoder.angle_turns,
                    (double)setpoint,
                    (double)erro,
                    (double)pid_output,
-                   (int)PID_IsInDeadzone(&pid));
+                   (int)PID_IsInDeadzone(&pid),
+                   Safety_GetStateName(&safety));
 
     if (len > 0 && len < (int)sizeof(buf)) {
         HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)len, 10);
@@ -273,11 +345,8 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* PC13 = LED onboard / botão homing (pull-up interno) */
-    GPIO_InitStruct.Pin  = GPIO_PIN_13;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    /* PC13: gerenciado por EStop_Init() como LED de alarme (OUTPUT_PP) */
+    /* Não inicializar PC13 aqui para evitar conflito com estop.c        */
 
     /* Níveis iniciais: DIR=LOW (CW), EN=HIGH (desabilitado) */
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
@@ -469,8 +538,18 @@ static void MX_USART1_UART_Init(void)
 static void Error_Handler(void)
 {
     __disable_irq();
+    /* Tenta colocar hardware em estado seguro — pode falhar se init não ocorreu */
+    /* Reconfigura PC13 como saída para piscar alarme */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    GPIO_InitTypeDef g = {0};
+    g.Mode = GPIO_MODE_OUTPUT_PP; g.Speed = GPIO_SPEED_FREQ_LOW;
+    g.Pin  = GPIO_PIN_1; HAL_GPIO_Init(GPIOB, &g);   /* Freio: engaja */
+    g.Pin  = GPIO_PIN_5; HAL_GPIO_Init(GPIOB, &g);   /* STO: ativo   */
+    g.Pin  = GPIO_PIN_13; HAL_GPIO_Init(GPIOC, &g);  /* LED alarme   */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);    /* Freio HIGH   */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);  /* STO LOW      */
     while (1) {
-        /* Pisca LED interno (PC13 invertido no Nucleo) para indicar erro */
         HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
         HAL_Delay(200);
     }

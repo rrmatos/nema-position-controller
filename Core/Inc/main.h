@@ -38,8 +38,11 @@ extern UART_HandleTypeDef huart1;
 #define POT_PIN       GPIO_PIN_0
 #define POT_PORT      GPIOA
 
-/** Pino do botão USER / LED onboard */
-#define BTN_PIN       GPIO_PIN_13
-#define BTN_PORT      GPIOC
+/*
+ * NOTA: PC13 (LED onboard) é usado pelo módulo estop.c como LED de alarme.
+ * EStop_Init() reconfigura PC13 como OUTPUT_PP durante a inicialização.
+ * Os pinos de segurança (E-Stop PB0, freio PB1, STO PB5) são definidos
+ * em estop.h e inicializados por EStop_Init().
+ */
 
 #endif /* MAIN_H */

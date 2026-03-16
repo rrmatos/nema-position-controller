@@ -78,12 +78,45 @@ typedef struct {
     Traj_State_t state;         /**< Estado atual do perfil */
 } Trajectory_t;
 
-/* ── Protótipos (a implementar) ──────────────────────────────────────── */
+/* ── Protótipos ──────────────────────────────────────────────────────── */
 
-/* @todo void Trajectory_Init(Trajectory_t *traj, int32_t steps, uint32_t v_max, uint32_t accel); */
-/* @todo void Trajectory_Start(Trajectory_t *traj); */
-/* @todo float Trajectory_Update(Trajectory_t *traj, float dt); */
-/* @todo bool Trajectory_IsComplete(const Trajectory_t *traj); */
-/* @todo void Trajectory_Abort(Trajectory_t *traj); */
+/**
+ * @brief Inicializa o perfil trapezoidal com os parâmetros do movimento.
+ * @param traj   Ponteiro para Trajectory_t
+ * @param steps  Total de steps (positivo = CW, negativo = CCW)
+ * @param v_max  Velocidade de cruzeiro em steps/s
+ * @param accel  Aceleração em steps/s²
+ */
+void Trajectory_Init(Trajectory_t *traj, int32_t steps,
+                     uint32_t v_max, uint32_t accel);
+
+/**
+ * @brief Inicia a execução do perfil (transita de IDLE para ACCEL).
+ * @param traj  Ponteiro para Trajectory_t
+ */
+void Trajectory_Start(Trajectory_t *traj);
+
+/**
+ * @brief Atualiza o perfil para o próximo instante de amostragem.
+ *        Deve ser chamado no loop de controle (1 kHz).
+ * @param traj  Ponteiro para Trajectory_t
+ * @param dt    Período de amostragem em segundos (ex.: 0.001f)
+ * @return float Velocidade instantânea em steps/s (sempre positiva; a
+ *               direção é dada pelo sinal de traj->total_steps)
+ */
+float Trajectory_Update(Trajectory_t *traj, float dt);
+
+/**
+ * @brief Verifica se o perfil foi concluído.
+ * @param traj  Ponteiro para Trajectory_t
+ * @return true se estado == TRAJ_COMPLETE
+ */
+bool Trajectory_IsComplete(const Trajectory_t *traj);
+
+/**
+ * @brief Aborta o movimento imediatamente (estado → TRAJ_IDLE, velocidade = 0).
+ * @param traj  Ponteiro para Trajectory_t
+ */
+void Trajectory_Abort(Trajectory_t *traj);
 
 #endif /* TRAJECTORY_H */
